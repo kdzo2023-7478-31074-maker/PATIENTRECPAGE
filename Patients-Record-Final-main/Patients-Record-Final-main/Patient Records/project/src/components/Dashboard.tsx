@@ -102,7 +102,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onBackToHome }) => {
   
   // Pagination states
   const [currentPage, setCurrentPage] = useState(1);
-  const recordsPerPage = 10;
+  const [recordsPerPage, setRecordsPerPage] = useState(50);
+  const [showAllRecords, setShowAllRecords] = useState(false);
   
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedGender, setSelectedGender] = useState<string>('all');
@@ -111,22 +112,45 @@ const Dashboard: React.FC<DashboardProps> = ({ onBackToHome }) => {
   const fetchPatientRecords = async () => {
     try {
       setLoading(true);
-      const { data, error } = await supabase
-        .from('patientrecords')
-        .select('*')
-        .order('date_of_record', { ascending: false });
 
-      if (error) {
-        console.error('Error fetching patient records:', error);
-        return;
+      let allRecords: PatientRecord[] = [];
+      let from = 0;
+      const batchSize = 1000;
+      let hasMore = true;
+
+      while (hasMore) {
+        const { data, error } = await supabase
+          .from('patientrecords')
+          .select('*')
+          .order('date_of_record', { ascending: false })
+          .range(from, from + batchSize - 1);
+
+        if (error) {
+          console.error('Error fetching patient records:', error);
+          hasMore = false;
+          break;
+        }
+
+        if (data) {
+          allRecords = [...allRecords, ...data];
+
+          if (data.length < batchSize) {
+            hasMore = false;
+          } else {
+            from += batchSize;
+          }
+        } else {
+          hasMore = false;
+        }
       }
 
-      if (data) {
-        setRecords(data);
-        setFilteredRecords(data);
-        calculateStats(data);
-        calculateReports(data);
+      if (allRecords.length > 0) {
+        setRecords(allRecords);
+        setFilteredRecords(allRecords);
+        calculateStats(allRecords);
+        calculateReports(allRecords);
         setLastUpdated(new Date());
+        console.log(`Loaded ${allRecords.length} patient records`);
       }
     } catch (error) {
       console.error('Error:', error);
@@ -386,10 +410,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onBackToHome }) => {
   }, [searchTerm, selectedGender, records]);
 
   // Pagination calculations
-  const totalPages = Math.ceil(filteredRecords.length / recordsPerPage);
-  const startIndex = (currentPage - 1) * recordsPerPage;
-  const endIndex = startIndex + recordsPerPage;
-  const currentRecords = filteredRecords.slice(startIndex, endIndex);
+  const displayRecordsPerPage = showAllRecords ? filteredRecords.length : recordsPerPage;
+  const totalPages = Math.ceil(filteredRecords.length / displayRecordsPerPage);
+  const startIndex = (currentPage - 1) * displayRecordsPerPage;
+  const endIndex = startIndex + displayRecordsPerPage;
+  const currentRecords = showAllRecords ? filteredRecords : filteredRecords.slice(startIndex, endIndex);
 
   const goToPage = (page: number) => {
     setCurrentPage(Math.max(1, Math.min(page, totalPages)));
@@ -747,9 +772,40 @@ const Dashboard: React.FC<DashboardProps> = ({ onBackToHome }) => {
                 <option value="male">Male</option>
                 <option value="female">Female</option>
               </select>
+              <select
+                value={showAllRecords ? 'all' : recordsPerPage.toString()}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  if (value === 'all') {
+                    setShowAllRecords(true);
+                    setCurrentPage(1);
+                  } else {
+                    setShowAllRecords(false);
+                    setRecordsPerPage(parseInt(value));
+                    setCurrentPage(1);
+                  }
+                }}
+                className="px-4 py-2 bg-gray-700/80 border border-gray-600/50 text-white rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent text-sm sm:w-auto transition-all duration-200 hover:bg-gray-700"
+              >
+                <option value="10">10 per page</option>
+                <option value="25">25 per page</option>
+                <option value="50">50 per page</option>
+                <option value="100">100 per page</option>
+                <option value="200">200 per page</option>
+                <option value="all">Show All</option>
+              </select>
             </div>
-            <div className="text-xs sm:text-sm text-gray-300 text-center sm:text-right">
-              Showing {startIndex + 1}-{Math.min(endIndex, filteredRecords.length)} of {filteredRecords.length} patients
+            <div className="flex flex-col sm:flex-row justify-between items-center gap-2 text-xs sm:text-sm">
+              <div className="text-accent-400 font-semibold font-display">
+                Total Records: {records.length} | Filtered: {filteredRecords.length}
+              </div>
+              <div className="text-gray-300">
+                {showAllRecords ? (
+                  <span>Showing all {filteredRecords.length} patients</span>
+                ) : (
+                  <span>Showing {startIndex + 1}-{Math.min(endIndex, filteredRecords.length)} of {filteredRecords.length} patients</span>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -835,9 +891,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onBackToHome }) => {
           </div>
           
           {/* Pagination */}
-          {totalPages > 1 && (
+          {!showAllRecords && totalPages > 1 && (
             <div className="px-3 sm:px-6 py-4 border-t border-gray-600/50 bg-gray-700/30 flex items-center justify-center">
               <div className="flex items-center space-x-2">
+                <button
+                  onClick={() => goToPage(1)}
+                  disabled={currentPage === 1}
+                  className="p-2 text-gray-400 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-200 rounded-lg hover:bg-gray-600/50 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                >
+                  <span className="text-xs">First</span>
+                </button>
                 <button
                   onClick={() => goToPage(currentPage - 1)}
                   disabled={currentPage === 1}
@@ -845,17 +908,24 @@ const Dashboard: React.FC<DashboardProps> = ({ onBackToHome }) => {
                 >
                   <ChevronLeft className="w-4 h-4" />
                 </button>
-                
+
                 <span className="text-xs sm:text-sm text-gray-300 px-2 sm:px-4 font-display">
-                  {currentPage} / {totalPages}
+                  Page {currentPage} of {totalPages}
                 </span>
-                
+
                 <button
                   onClick={() => goToPage(currentPage + 1)}
                   disabled={currentPage === totalPages}
                   className="p-2 text-gray-400 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-200 rounded-lg hover:bg-gray-600/50 focus:outline-none focus:ring-2 focus:ring-primary-500"
                 >
                   <ChevronRight className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => goToPage(totalPages)}
+                  disabled={currentPage === totalPages}
+                  className="p-2 text-gray-400 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-200 rounded-lg hover:bg-gray-600/50 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                >
+                  <span className="text-xs">Last</span>
                 </button>
               </div>
             </div>
